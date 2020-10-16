@@ -19,12 +19,17 @@ import React, {
 import Reactium, {
     __,
     useAsyncEffect,
-    useDerivedState,
     useEventHandle,
+    useEventRefs,
     useFulfilledObject,
     useHookComponent,
     useRegisterHandle,
+    useStatus,
 } from 'reactium-core/sdk';
+
+import { fromEvent } from 'rxjs';
+
+import { refSubject, refPromise } from './helpers';
 
 /**
  * -----------------------------------------------------------------------------
@@ -74,7 +79,6 @@ const ErrorMessages = ({ editor, errors }) => {
 
 let ContentEditor = (
     {
-        ENUMS,
         className,
         id,
         namespace,
@@ -88,19 +92,35 @@ let ContentEditor = (
         onSuccess,
         onValidate,
         sidebar = true,
+        params: routeParams,
+        search: routeSearch,
+
+        // aliasing these to clean up rest props
+        /*eslint-disable */
+        route: bpRoute,
+        meta: bpMeta,
+        zone: bpZone,
+        zones: bpZones,
+        section: bpSection,
+        sections: bpSections,
+        /*eslint-enable */
+
         ...props
     },
     ref,
 ) => {
-    const debugMode = ['on', 'true', '1'].includes(
-        op.get(props, 'search.debug'),
-    );
-    const stackTraceMode = ['on', 'true', '1'].includes(
-        op.get(props, 'search.stack'),
-    );
+    const ENUMS = ContentEditor.ENUMS;
+    const STATUSES = ENUMS.STATUS;
+
+    const [status, setStatus, isStatus] = useStatus(STATUSES.INITIALIZING);
+    console.log({ status });
+
+    const refs = useEventRefs();
+    const refsObserver = fromEvent(refs, 'set');
+    const formRef = refs.createProxy('form');
+    const formSubject = refSubject(refsObserver, 'form');
 
     const alertRef = useRef();
-    const formRef = useRef();
     const loadingRef = useRef();
     const sidebarRef = useRef();
     const valueRef = useRef({});
@@ -120,20 +140,17 @@ let ContentEditor = (
     const [contentType, setContentType] = useState();
     const [alert, setNewAlert] = useState(alertDefault);
     const [fieldTypes] = useState(Reactium.ContentType.FieldType.list);
-    const [propState] = useDerivedState(props, [
-        'params.type',
-        'params.slug',
-        'search.branch',
-    ]);
-    const type = op.get(propState, 'params.type');
-    const slug = op.get(propState, 'params.slug', 'new');
-    const branch = op.get(propState, 'search.branch', 'master');
+
+    const type = op.get(routeParams, 'type');
+    const slug = op.get(routeParams, 'slug', 'new');
+    const branch = op.get(routeSearch, 'branch', 'master');
     const currentSlug = op.get(valueRef.current, 'slug');
+
+    console.log({ type, slug, branch, currentSlug });
 
     const [dirty, setNewDirty] = useState(true);
     const [errors, setErrors] = useState({});
     const [stale, setNewStale] = useState(false);
-    const [status] = useState('pending');
     const [state, _setState] = useState({});
     const setState = (val = {}) => {
         if (unMounted()) return;
@@ -146,7 +163,6 @@ let ContentEditor = (
         debug('setState', { val, newState });
 
         _setState(newState);
-        //_.defer(() => _setState({ ...newState, update: Date.now() }));
     };
 
     const [types, setTypes] = useState();
@@ -226,6 +242,13 @@ let ContentEditor = (
 
     // Functions
     const debug = (...args) => {
+        const debugMode = ['on', 'true', '1'].includes(
+            op.get(props, 'search.debug', window && window.debugEditor),
+        );
+        const stackTraceMode = ['on', 'true', '1'].includes(
+            op.get(props, 'search.stack', window && window.debugEditorStack),
+        );
+
         if (!debugMode) return;
         if (stackTraceMode) args.push(new Error().stack);
         console.log(...args);
@@ -286,14 +309,6 @@ let ContentEditor = (
     };
 
     const getContent = async () => {
-        loadingStatus.current = Date.now();
-
-        if (isNew()) {
-            await dispatch('load', { value: {} }, onLoad);
-            loadingStatus.current = undefined;
-            return Promise.resolve({});
-        }
-
         const request = {
             refresh: true,
             type: contentType,
@@ -303,22 +318,7 @@ let ContentEditor = (
             },
         };
 
-        const content = await Reactium.Content.retrieve(request);
-
-        if (content) {
-            await dispatch('load', { value: content }, onLoad);
-            loadingStatus.current = undefined;
-            return Promise.resolve(content);
-        } else {
-            const message = (
-                <span>
-                    Unable to find {properCase(type)}:{' '}
-                    <span className='red strong'>{slug}</span>
-                </span>
-            );
-            _onError({ message });
-            return Promise.reject(message);
-        }
+        return Reactium.Content.retrieve(request);
     };
 
     const getTypes = () => Reactium.ContentType.types();
@@ -336,10 +336,7 @@ let ContentEditor = (
         return true;
     };
 
-    const isNew = () => {
-        const val = String(slug).toLowerCase() === 'new' ? true : null;
-        return val === true ? true : null;
-    };
+    const isNew = () => String(slug).toLowerCase() === 'new';
 
     const isStale = () => stale;
 
@@ -370,15 +367,8 @@ let ContentEditor = (
     };
 
     const reset = async () => {
-        loadingStatus.current = undefined;
-        ignoreChangeEvent.current = true;
-        setValue(undefined, true);
-        if (isNew() && formRef.current) {
-            _.defer(() => {
-                if (unMounted()) return;
-                formRef.current.setValue(null);
-            });
-        }
+        if (isStatus(STATUSES.RESETTING)) return;
+        setStatus(STATUSES.RESETTING, true);
     };
 
     const save = async (mergeValue = {}) => {
@@ -813,13 +803,37 @@ let ContentEditor = (
         }
     };
 
-    const isReady = () => ready === true;
+    const isReady = () => ready === true && !isResetNeeded();
 
-    const isLoading = () => {
-        if (!isReady()) return true;
-        if (!isNew() && slug !== currentSlug) return true;
+    const isInitializing = () =>
+        isStatus([STATUSES.INITIALIZING, STATUSES.LOADING_TYPES]);
+
+    // is the editor in a left-over state from a previous load?
+    const isResetNeeded = () => {
+        console.log('isResetNeeded', {
+            alreadyResetting: isStatus(STATUSES.RESETTING),
+        });
+        if (isStatus(STATUSES.RESETTING)) return false;
+
+        // new but we still have loaded / saved content in the editor
+        console.log('isResetNeeded', {
+            newButRevise: isNew() && isStatus([STATUSES.CONTENT_REVISE]),
+            isNew: isNew(),
+            isRevisStatus: isStatus([STATUSES.CONTENT_REVISE]),
+        });
+        if (isNew() && isStatus([STATUSES.CONTENT_REVISE])) return true;
+
+        // loaded / saved content, but it's the wrong content
+        // TODO: figure out if this condition is necessary
+        // if (isStatus([STATUSES.CONTENT_REVISE]) && slug !== currentSlug) return true;
+
         return false;
     };
+
+    // is the editor fetching data needed to render properly
+    // Note: When loading, the formRef is completely unavailable!
+    const isWaiting = () =>
+        !isStatus([STATUSES.CONTENT_DRAFT, STATUSES.CONTENT_REVISE]);
 
     // Handle
     const _handle = () => ({
@@ -841,6 +855,7 @@ let ContentEditor = (
         parseErrorMessage,
         properCase,
         ready,
+        reset,
         regions,
         save,
         slug,
@@ -867,13 +882,72 @@ let ContentEditor = (
     useImperativeHandle(ref, () => handle, [handle]);
     useRegisterHandle(`${id}Editor`, () => handle, [handle]);
 
+    const toastError = (message, context, status) => {
+        Toast.show({
+            icon: 'Feather.AlertOctagon',
+            message,
+            type: Toast.TYPE.ERROR,
+        });
+
+        console.error({ message, context, status });
+        if (status) setStatus(status);
+    };
+
+    const EDITOR_ERROR = {
+        TYPE_INVALID: () =>
+            toastError(
+                ENUMS.TEXT.TYPE_INVALID_ERROR,
+                type,
+                STATUSES.TYPE_INVALID_ERROR,
+            ),
+        TYPE_LOAD: error =>
+            toastError(
+                ENUMS.TEXT.TYPE_LOAD_ERROR,
+                error,
+                STATUSES.TYPE_LOAD_ERROR,
+            ),
+        CONTENT_LOAD: error =>
+            toastError(
+                ENUMS.TEXT.CONTENT_LOAD_ERROR,
+                error,
+                STATUSES.CONTENT_LOAD_ERROR,
+            ),
+    };
+
     // get content types
     useAsyncEffect(
         async mounted => {
-            if (!type) return;
-            const results = await getTypes();
-            if (mounted()) setTypes(results);
-            return () => {};
+            if (!isStatus(STATUSES.LOADING_TYPES)) {
+                setStatus(STATUSES.LOADING_TYPES);
+
+                if (!type) {
+                    EDITOR_ERROR.TYPE_INVALID();
+                    return;
+                }
+
+                try {
+                    const results = await getTypes();
+
+                    if (!_.pluck(results, 'machineName').includes(type)) {
+                        EDITOR_ERROR.TYPE_INVALID();
+                        return;
+                    }
+
+                    setStatus(STATUSES.TYPES_LOADED);
+                    if (mounted()) {
+                        setTypes(results);
+                        const newTitle = properCase(
+                            `${type} ${ENUMS.TEXT.EDITOR}`,
+                        );
+                        if (op.get(state, 'title') === newTitle) return;
+                        setState({ title: newTitle });
+                    }
+                } catch (error) {
+                    console.log({ error });
+                    EDITOR_ERROR.TYPE_LOAD(error);
+                    return;
+                }
+            }
         },
         [type],
     );
@@ -887,31 +961,16 @@ let ContentEditor = (
     ]);
 
     // slug change
-    useEffect(() => {
-        if (slug !== currentSlug) {
-            if (isNew()) {
-                reset();
-            } else {
-                loadingStatus.current = undefined;
-            }
-        }
-    }, [currentSlug, slug]);
-
-    // set content type
-    useEffect(() => {
-        if (!type) return;
-        const t = _.findWhere(types, { type });
-        if (!t) return;
-        setContentType(t);
-    }, [type, types]);
-
-    // update title
-    useEffect(() => {
-        if (!type) return;
-        const newTitle = properCase(`${type} ${ENUMS.TEXT.EDITOR}`);
-        if (op.get(state, 'title') === newTitle) return;
-        setState({ title: newTitle });
-    }, [type]);
+    // useEffect(() => {
+    //     if (slug !== currentSlug) {
+    //         console.log('useEffect', { slug, currentSlug });
+    //         if (isNew()) {
+    //             reset();
+    //         } else {
+    //             loadingStatus.current = undefined;
+    //         }
+    //     }
+    // }, [currentSlug, slug]);
 
     // update handle
     useEffect(() => {
@@ -960,59 +1019,83 @@ let ContentEditor = (
         };
     }, [ready]);
 
-    // get content
-    useAsyncEffect(() => {
-        if (ready !== true || isNew()) return;
-        if (loadingStatus.current) return;
-        if (unMounted() || !slug || !type) return;
+    // get content or reset editor
+    useAsyncEffect(
+        async mounted => {
+            // Wait for initialization before loading content
+            if (isInitializing()) return;
 
-        getContent()
-            .then(result => {
-                if (unMounted()) return;
-                if (!result) return;
+            // force tear down of existing form
+            if (isResetNeeded()) {
+                setStatus(STATUSES.RESETTING, true);
+                return;
+            }
+
+            // fresh load or resetting
+            if (isStatus([STATUSES.TYPES_LOADED, STATUSES.RESETTING])) {
+                // got straight to daft state
+                if (isNew()) {
+                    setStatus(STATUSES.CONTENT_DRAFT);
+                    setValue({}, true);
+
+                    return;
+                }
+
+                setStatus(STATUSES.READY_TO_LOAD, true);
+                return;
+            }
+
+            if (isStatus(STATUSES.READY_TO_LOAD)) {
+                try {
+                    setStatus(STATUSES.LOADING_CONTENT);
+                    const content = await getContent();
+
+                    console.log({ content, mounted: mounted(), status });
+                    // time has gone by, and status may have changed
+                    // asynchrounously
+                    if (mounted() && isStatus(STATUSES.LOADING_CONTENT)) {
+                        setStatus(STATUSES.CONTENT_REVISE, true);
+                        _.defer(() =>
+                            dispatch('load', { value: content }, onLoad),
+                        );
+                    }
+                } catch (error) {
+                    EDITOR_ERROR.CONTENT_LOAD(error);
+                    _.delay(() => {
+                        Reactium.Routing.history.push(
+                            `/admin/content/${type}/new`,
+                        );
+                    }, 1000);
+                }
+            }
+
+            if (isStatus(STATUSES.CONTENT_REVISE)) {
+                await refPromise(formSubject);
+                setClean({ value: result });
 
                 setClean({ value: result });
-                setValue(result, true);
-            })
-            .catch(error => {
-                Reactium.Routing.history.push(`/admin/content/${type}/new`);
-                _.defer(() => {
-                    Toast.show({
-                        icon: 'Feather.AlertOctagon',
-                        message: __('Error loading content'),
-                        type: Toast.TYPE.ERROR,
-                    });
-                    console.error({ error });
-                });
-            });
-    }, [ready, isNew()]);
+            }
+        },
+        [status],
+    );
 
     // create pulse
-    useEffect(() => {
-        if (!ready) return;
-        Reactium.Pulse.register('content-editor', pulse, { delay: 250 });
-        return () => Reactium.Pulse.unregister('content-editor');
-    }, [ready]);
-
-    // clear on unmount
-    useEffect(() => {
-        return () => {
-            valueRef.current = {};
-            handle.value = valueRef.current;
-            handle.state = {};
-            reset();
-        };
-    }, []);
+    // DEBUG
+    // useEffect(() => {
+    //     if (!ready) return;
+    //     Reactium.Pulse.register('content-editor', pulse, { delay: 250 });
+    //     return () => Reactium.Pulse.unregister('content-editor');
+    // }, [ready]);
 
     // scroll to top
     useEffect(() => {
-        if (isLoading()) return;
-        if (typeof window === 'undefined') return;
+        if (isWaiting()) return;
         document.body.scrollTop = 0;
-    }, [isLoading(), isNew()]);
+    }, [isWaiting()]);
 
     const render = () => {
-        if (isLoading()) return <Loading ref={loadingRef} />;
+        if (isWaiting()) return <Loading ref={loadingRef} />;
+
         const { title, value = {} } = state;
         const currentValue = valueRef.current || {};
         const [contentRegions, sidebarRegions] = regions();
@@ -1094,7 +1177,6 @@ let ContentEditor = (
 ContentEditor = forwardRef(ContentEditor);
 
 ContentEditor.propTypes = {
-    ENUMS: PropTypes.object,
     className: PropTypes.string,
     id: PropTypes.string,
     namespace: PropTypes.string,
@@ -1113,7 +1195,6 @@ ContentEditor.propTypes = {
 };
 
 ContentEditor.defaultProps = {
-    ENUMS: DEFAULT_ENUMS,
     namespace: 'admin-content',
     onChange: noop,
     onError: noop,
@@ -1128,5 +1209,7 @@ ContentEditor.defaultProps = {
     title: DEFAULT_ENUMS.TEXT.EDITOR,
     value: null,
 };
+
+ContentEditor.ENUMS = DEFAULT_ENUMS;
 
 export default ContentEditor;

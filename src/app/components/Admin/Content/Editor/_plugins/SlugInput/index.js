@@ -1,7 +1,12 @@
 import _ from 'underscore';
 import cn from 'classnames';
-import React, { useRef, useState, useEffect } from 'react';
-import { __, useFocusEffect, useHookComponent } from 'reactium-core/sdk';
+import React, { useRef, useState, useEffect, memo } from 'react';
+import {
+    __,
+    useFocusEffect,
+    useHookComponent,
+    useEventEffect,
+} from 'reactium-core/sdk';
 import _slugify from 'slugify';
 import { Button, Icon } from '@atomic-reactor/reactium-ui';
 
@@ -17,7 +22,7 @@ export const slugify = str => {
     return str;
 };
 
-export default props => {
+const SlugInput = props => {
     const containerRef = useRef();
     const slugRef = useRef();
 
@@ -25,9 +30,18 @@ export default props => {
     const { cx, isNew, properCase, type } = editor;
     const className = cn('form-group', { error: !!errorText });
 
-    const [autoGen, setAuthGen] = useState(isNew());
+    const [autoGen, setAutoGen] = useState(isNew());
     const [focused] = useFocusEffect(containerRef);
     const [readOnly, setReadOnly] = useState(true);
+
+    const clean = e => {
+        console.log('SlugInput clean', e.type);
+        setAutoGen(e.currentTarget.isNew());
+    };
+
+    useEventEffect(editor, { clean: reset, 'save-success': clean, reset });
+
+    console.log({ autoGen });
 
     const titlePlaceholder = String(__('%type Title')).replace('%type', type);
 
@@ -55,7 +69,7 @@ export default props => {
         slugRef.current.value = String(currentSlug).replace(/-$/g, '');
         setReadOnly(true);
         if (String(currentSlug).length > 0 && autoGen !== false) {
-            setAuthGen(false);
+            setAutoGen(false);
         }
     };
 
@@ -64,7 +78,7 @@ export default props => {
         e.target.value = slugify(value);
         const len = String(e.target.value).length;
 
-        if (len < 1) setAuthGen(true);
+        if (len < 1) setAutoGen(true);
         if (len > 0 && autoGen !== false) setAuthGen(false);
     };
 
@@ -124,3 +138,5 @@ export default props => {
         </div>
     );
 };
+
+export default memo(SlugInput);
