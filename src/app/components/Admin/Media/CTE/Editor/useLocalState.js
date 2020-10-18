@@ -10,7 +10,7 @@ const useLocalState = (defaultState = {}) => {
 
     const forceUpdate = newState => {
         updateState(newState);
-        _.defer(() => updateState({ ...newState, update: Date.now() }));
+        // _.defer(() => updateState({ ...newState, update: Date.now() }));
     };
 
     const setState = (newState, newValue) => {

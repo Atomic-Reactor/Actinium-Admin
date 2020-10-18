@@ -35,13 +35,10 @@ const SlugInput = props => {
     const [readOnly, setReadOnly] = useState(true);
 
     const clean = e => {
-        console.log('SlugInput clean', e.type);
         setAutoGen(e.currentTarget.isNew());
     };
 
     useEventEffect(editor, { clean: reset, 'save-success': clean, reset });
-
-    console.log({ autoGen });
 
     const titlePlaceholder = String(__('%type Title')).replace('%type', type);
 

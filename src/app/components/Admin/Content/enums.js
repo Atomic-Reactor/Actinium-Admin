@@ -29,6 +29,7 @@ const ENUMS = {
          */
         // Editor needs reset or content reloaded
         RESETTING: 'RESETTING',
+        READY_TO_LOAD: 'READY_TO_LOAD',
 
         /**
          * LOADING or SAVING
@@ -42,9 +43,9 @@ const ENUMS = {
          * READINESS STATUSES
          */
         // Content is new (editing allowed)
-        CONTENT_NEW: 'CONTENT_NEW',
+        CONTENT_DRAFT: 'CONTENT_DRAFT',
         // Content is loaded (editing allowed)
-        CONTENT_LOADED: 'CONTENT_LOADED',
+        CONTENT_REVISE: 'CONTENT_REVISE',
 
         /**
          * EDITOR ERROR STATUSES
