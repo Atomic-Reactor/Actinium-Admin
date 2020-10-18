@@ -7,6 +7,7 @@ import PropTypes from 'prop-types';
 import ContentEvent from '../_utils/ContentEvent';
 import DEFAULT_ENUMS from 'components/Admin/Content/enums';
 import useProperCase from 'components/Admin/Tools/useProperCase';
+import ErrorBoundary from './ErrorBoundary';
 
 import React, {
     forwardRef,
@@ -86,15 +87,17 @@ const useRouteChange = () => {
                 type: op.get(Router, 'params.type'),
                 slug: op.get(Router, 'params.slug', 'new'),
                 branch: op.get(Router, 'params.branch', 'master'),
-                search: op.get(Router, 'search', {}),
+                search: op.get(Router, 'urlParams', {}),
             };
         },
         shouldUpdate: ({ newState, prevState }) => {
-            return (
+            const update =
                 newState.type !== prevState.type ||
                 newState.slug !== prevState.slug ||
-                newState.branch !== prevState.branch
-            );
+                newState.branch !== prevState.branch;
+
+            console.log({ update, newState, prevState });
+            return update;
         },
         returnMode: 'get',
     });
@@ -141,7 +144,7 @@ let ContentEditor = (
         STATUSES.INITIALIZING,
     );
     const setStatus = (status, force) => {
-        console.log('setStatus', { status, force });
+        debug('setStatus', { status, force });
         _setStatus(status, force);
     };
 
@@ -175,6 +178,8 @@ let ContentEditor = (
         if (!isNew() && isStatus(STATUSES.CONTENT_DRAFT)) return true;
 
         if (isNew() && isStatus([STATUSES.CONTENT_REVISE])) return true;
+
+        debug({ slug: rt('slug'), currentSlug: refs.get('value.slug') });
 
         // loaded / saved content, but it's the wrong content
         if (
@@ -221,7 +226,7 @@ let ContentEditor = (
     };
 
     const setClean = (params = {}) => {
-        if (!refs.get('form')) return;
+        // if (!refs.get('form')) return;
 
         setNewDirty(false);
 
@@ -232,7 +237,7 @@ let ContentEditor = (
     };
 
     const setDirty = (params = {}) => {
-        if (!refs.get('form')) return;
+        // if (!refs.get('form')) return;
         const newValue = op.get(params, 'value');
 
         setNewDirty(true);
@@ -242,7 +247,7 @@ let ContentEditor = (
     };
 
     const setStale = val => {
-        if (!refs.get('form')) return;
+        // if (!refs.get('form')) return;
         setNewStale(val);
 
         _.defer(() => {
@@ -273,11 +278,11 @@ let ContentEditor = (
 
     // Functions
     const debug = (...args) => {
-        const debugMode = ['on', 'true', '1'].includes(
+        const debugMode = ['on', 'true', '1', true].includes(
             rt('search.debug', window && window.debugEditor),
         );
-        const stackTraceMode = ['on', 'true', '1'].includes(
-            rt('search.debug', window && window.debugEditorStack),
+        const stackTraceMode = ['on', 'true', '1', true].includes(
+            rt('search.debugStack', window && window.debugEditorStack),
         );
 
         if (!debugMode) return;
@@ -448,6 +453,7 @@ let ContentEditor = (
         }
 
         await dispatch('save', { value: newValue }, onChange);
+        setStatus(STATUSES.CONTENT_SAVING);
 
         return Reactium.Content.save(newValue, [], handle)
             .then(async result => {
@@ -456,9 +462,12 @@ let ContentEditor = (
                     { value: result, ignoreChangeEvent: true },
                     _onSuccess,
                 );
+
+                setStatus(STATUSES.CONTENT_REVISE);
             })
             .catch(async error => {
                 await dispatch('save-fail', { error }, _onFail);
+                setStatus(STATUSES.RESETTING, true);
             });
     };
 
@@ -737,7 +746,7 @@ let ContentEditor = (
         const Msg = () => (
             <span>
                 <Icon name='Feather.AlertOctagon' style={{ marginRight: 8 }} />
-                {String(ENUMS.TEXT.SAVE_ERROR).replace('%type', type)}
+                {String(ENUMS.TEXT.SAVE_ERROR).replace('%type', rt('type'))}
             </span>
         );
 
@@ -768,7 +777,7 @@ let ContentEditor = (
         const Msg = () => (
             <span>
                 <Icon name='Feather.Check' style={{ marginRight: 8 }} />
-                {String(ENUMS.TEXT.SAVED).replace('%type', type)}
+                {String(ENUMS.TEXT.SAVED).replace('%type', rt('type'))}
             </span>
         );
 
@@ -1023,7 +1032,7 @@ let ContentEditor = (
     // get content or reset editor
     useAsyncEffect(
         async mounted => {
-            console.log('status loop', {
+            debug('status loop', {
                 status: getStatus(),
                 type: rt('type'),
                 slug: rt('slug'),
@@ -1033,8 +1042,7 @@ let ContentEditor = (
             if (isInitializing()) return;
 
             if (isResetNeeded()) {
-                console.log('RESET NEEDED!!!');
-                _.defer(() => setStatus(STATUSES.RESETTING, true));
+                setStatus(STATUSES.RESETTING, true);
                 return;
             }
 
@@ -1050,7 +1058,8 @@ let ContentEditor = (
                 try {
                     if (isNew()) {
                         // give RTE time to tear down
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                        setValue({});
+                        await new Promise(resolve => setTimeout(resolve, 250));
                         setStatus(STATUSES.CONTENT_DRAFT, true);
                         return;
                     }
@@ -1078,8 +1087,8 @@ let ContentEditor = (
                 await refPromise(formSubject);
                 formRef.current.setValue(refs.get('value'));
 
-                console.log('content revise mode', {
-                    valueRef,
+                debug('Content revise mode', {
+                    value: refs.get('value'),
                     mounted: mounted(),
                 });
 
@@ -1095,8 +1104,8 @@ let ContentEditor = (
                 await refPromise(formSubject);
                 formRef.current.setValue(null);
 
-                console.log('content draft mode', {
-                    valueRef,
+                debug('Content draft mode', {
+                    value: refs.get('value'),
                     mounted: mounted(),
                 });
 
@@ -1112,12 +1121,11 @@ let ContentEditor = (
     );
 
     // create pulse
-    // DEBUG
-    // useEffect(() => {
-    //     if (!ready) return;
-    //     Reactium.Pulse.register('content-editor', pulse, { delay: 250 });
-    //     return () => Reactium.Pulse.unregister('content-editor');
-    // }, [ready]);
+    useEffect(() => {
+        if (!ready) return;
+        Reactium.Pulse.register('content-editor', pulse, { delay: 250 });
+        return () => Reactium.Pulse.unregister('content-editor');
+    }, [ready]);
 
     // scroll to top
     useEffect(() => {
@@ -1133,7 +1141,7 @@ let ContentEditor = (
         const [contentRegions, sidebarRegions] = regions();
 
         return (
-            <>
+            <ErrorBoundary debug={debug}>
                 <Helmet>
                     <title>{title}</title>
                 </Helmet>
@@ -1199,7 +1207,7 @@ let ContentEditor = (
                         </Sidebar>
                     )}
                 </EventForm>
-            </>
+            </ErrorBoundary>
         );
     };
 
